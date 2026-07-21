@@ -3,7 +3,7 @@
 set -e
 
 echo "[mihome] 启动: 生成 config.json from options.json"
-node /app/options2config.js
+node /app/options2config.js || echo "[mihome] options2config 跳过 (使用已有 config.json)"
 
 echo "[mihome] 调试: 9898 端口占用情况:"
 netstat -ulnp 2>/dev/null | grep 9898 || echo "(netstat 无 9898 或不可用)"
