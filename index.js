@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { Hub } = require('./lib/Hub');
+const TriggerEngine = require('./lib/triggers');
 
 const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, 'config.json');
 
@@ -397,35 +398,39 @@ const keys = (gateways || []).map(g => ({ ip: g.ip, key: g.key }));
 let hub = new Hub({ keys: keys, port: port, bind: bind }, true);
 hub.listen();
 
+// ---- 规则引擎 ----
+let triggers = new TriggerEngine(() => hub, gateways, rules, config);
+
 let lastMessageTime = Date.now();
 let reconnectTimer = null;
 const RECONNECT_TIMEOUT = (config.heartbeatTimeout || 120) * 1000;
 
-hub.on('message', msg => {
-    lastMessageTime = Date.now();
-    if (config.debug) console.log('[raw]', JSON.stringify(msg));
-});
-hub.on('error', err => console.error('[hub] error:', err));
-hub.on('debug', msg => { if (config.debug) console.debug('[hub] debug:', msg); });
-hub.on('warning', msg => console.warn('[hub] warn:', msg));
-
-hub.on('device', (sensor, name) => {
-    const sid = sensor.sid;
-    const type = sensor.className || sensor.type;
-    const ip = sensor.ip;
-    console.log(`[device] ${type} sid=${sid} ip=${ip}`);
-    if (out.discover) out.discover(sid, type, {});
-    out.send(`device/${sid}`, { event: 'present', type, ip });
-});
-
-hub.on('data', (sid, type, data) => {
-    if (!data) return;
-    lastMessageTime = Date.now();
-    if (out.discover) out.discover(sid, type, data);
-    out.send(`state/${sid}/${type}`, data);
-    if (type === 'magnet') handleDoor(sid, data);
-    runRules(sid, data);
-});
+function bindHubEvents() {
+    hub.on('message', msg => {
+        lastMessageTime = Date.now();
+        if (config.debug) console.log('[raw]', JSON.stringify(msg));
+    });
+    hub.on('error', err => console.error('[hub] error:', err));
+    hub.on('debug', msg => { if (config.debug) console.debug('[hub] debug:', msg); });
+    hub.on('warning', msg => console.warn('[hub] warn:', msg));
+    hub.on('device', (sensor, name) => {
+        const sid = sensor.sid;
+        const type = sensor.className || sensor.type;
+        const ip = sensor.ip;
+        console.log(`[device] ${type} sid=${sid} ip=${ip}`);
+        if (out.discover) out.discover(sid, type, {});
+        out.send(`device/${sid}`, { event: 'present', type, ip });
+    });
+    hub.on('data', (sid, type, data) => {
+        if (!data) return;
+        lastMessageTime = Date.now();
+        if (out.discover) out.discover(sid, type, data);
+        out.send(`state/${sid}/${type}`, data);
+        if (type === 'magnet') triggers.onDoor(sid, data);
+        triggers.onData(sid, data);
+    });
+}
+bindHubEvents();
 
 // ---- 重连机制 ----
 function checkHealth() {
@@ -446,29 +451,8 @@ function reconnect() {
                 reconnectTimer = null;
                 hub = new Hub({ keys: keys, port: port, bind: bind }, true);
                 hub.listen();
-                // 重新绑定事件
-                hub.on('message', msg => {
-                    lastMessageTime = Date.now();
-                    if (config.debug) console.log('[raw]', JSON.stringify(msg));
-                });
-                hub.on('error', err => console.error('[hub] error:', err));
-                hub.on('debug', msg => { if (config.debug) console.debug('[hub] debug:', msg); });
-                hub.on('warning', msg => console.warn('[hub] warn:', msg));
-                hub.on('device', (sensor, name) => {
-                    const sid = sensor.sid;
-                    const type = sensor.className || sensor.type;
-                    console.log(`[device] ${type} sid=${sid} ip=${sensor.ip}`);
-                    if (out.discover) out.discover(sid, type, {});
-                    out.send(`device/${sid}`, { event: 'present', type, ip: sensor.ip });
-                });
-                hub.on('data', (sid, type, data) => {
-                    if (!data) return;
-                    lastMessageTime = Date.now();
-                    if (out.discover) out.discover(sid, type, data);
-                    out.send(`state/${sid}/${type}`, data);
-                    if (type === 'magnet') handleDoor(sid, data);
-                    runRules(sid, data);
-                });
+                triggers = new TriggerEngine(() => hub, gateways, rules, config);
+                bindHubEvents();
                 lastMessageTime = Date.now();
                 console.log('[hub] 重连完成');
             }, 3000);
@@ -479,85 +463,11 @@ function reconnect() {
             reconnectTimer = null;
             hub = new Hub({ keys: keys, port: port, bind: bind }, true);
             hub.listen();
+            triggers = new TriggerEngine(() => hub, gateways, rules, config);
+            bindHubEvents();
             lastMessageTime = Date.now();
         }, 3000);
     }
-}
-
-// ---- Trigger 规则引擎 ----
-const ruleTimers = {};
-const ruleHeldByDoor = {};
-const doorStates = {};
-
-function getVal(obj, attr) {
-    return obj && obj.hasOwnProperty(attr) ? obj[attr] : undefined;
-}
-function ruleKey(rule) { return rule.name || (rule.target.sid + '/' + rule.target.attr); }
-
-function scheduleOff(rule) {
-    const key = ruleKey(rule);
-    if (ruleTimers[key]) clearTimeout(ruleTimers[key]);
-    ruleTimers[key] = setTimeout(() => {
-        const dg = rule.doorGuard;
-        if (dg && doorStates[dg] === false) {
-            ruleHeldByDoor[key] = true;
-            console.log(`[trigger] ${rule.name || rule.target.sid}: 到点但门(${dg})关着, 保持亮灯(heldByDoor)`);
-            delete ruleTimers[key];
-            return;
-        }
-        applyControl(rule, rule.offValue);
-        ruleHeldByDoor[key] = false;
-        console.log(`[trigger] ${rule.name || rule.target.sid}: 超时 ${rule.delay}s -> offValue=${rule.offValue}`);
-        delete ruleTimers[key];
-    }, (rule.delay || 10) * 1000);
-}
-
-function runRules(sid, data) {
-    if (config.enable_triggers === false) {
-        console.log('[trigger] enable_triggers=false, 跳过规则');
-        return;
-    }
-    for (const rule of rules) {
-        if (!rule.match || rule.match.sid !== sid) continue;
-        const v = getVal(data, rule.match.attr);
-        if (v === undefined) continue;
-        if (String(v) !== String(rule.match.equals)) continue;
-        applyControl(rule, rule.onValue);
-        ruleHeldByDoor[ruleKey(rule)] = false;
-        console.log(`[trigger] ${rule.name || rule.target.sid}: 命中 -> onValue=${rule.onValue}`);
-        scheduleOff(rule);
-    }
-}
-
-function handleDoor(sid, data) {
-    if (config.enable_triggers === false) return;
-    const st = getVal(data, 'state');
-    if (st === undefined) return;
-    const wasClosed = doorStates[sid] === false;
-    doorStates[sid] = !!st;
-    if (st === true && wasClosed) {
-        for (const rule of rules) {
-            if (rule.doorGuard !== sid) continue;
-            const key = ruleKey(rule);
-            if (ruleHeldByDoor[key]) {
-                applyControl(rule, rule.offValue);
-                ruleHeldByDoor[key] = false;
-                console.log(`[trigger] 门(${sid})打开, 补关 ${rule.name || rule.target.sid} -> offValue=${rule.offValue}`);
-            }
-        }
-    }
-}
-
-function applyControl(rule, value) {
-    const sensor = hub.getSensor(rule.target.sid);
-    if (!sensor) { console.error(`[trigger] 找不到目标设备 ${rule.target.sid}`); return; }
-    if (typeof sensor.Control !== 'function') { console.error(`[trigger] 设备 ${rule.target.sid} 不支持 Control`); return; }
-    const gwIp = (gateways[0] && gateways[0].ip) || '192.168.50.115';
-    try { hub.socket.send('{"cmd":"get_id_list"}', 0, 17, 9898, gwIp); } catch (e) {}
-    setTimeout(() => {
-        try { sensor.Control(rule.target.attr, value); }
-        catch (e) { console.error(`[trigger] Control 失败: ${e.message}`); }
-    }, 500);
 }
 
 // 保活 + 定期重发现 + 健康检查
