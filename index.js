@@ -426,7 +426,8 @@ function bindHubEvents() {
         lastMessageTime = Date.now();
         if (out.discover) out.discover(sid, type, data);
         out.send(`state/${sid}/${type}`, data);
-        if (type === 'magnet') triggers.onDoor(sid, data);
+        // 匹配所有门磁类型 (magnet, sensor_magnet, sensor_magnet.aq2)
+        if (SENSOR_TYPES.door.includes(type)) triggers.onDoor(sid, data);
         triggers.onData(sid, data);
     });
 }
@@ -472,7 +473,7 @@ function reconnect() {
 
 // 保活 + 定期重发现 + 健康检查
 const rediscoverInterval = (config.rediscoverInterval || 60) * 1000;
-const healthCheckInterval = 30000; // 30秒检查一次心跳
+const healthCheckInterval = 30000;
 
 setInterval(() => {
     try { hub && hub.socket && hub.socket.send('{"cmd":"whois"}', 0, 13, 4321, '224.0.0.50'); }
