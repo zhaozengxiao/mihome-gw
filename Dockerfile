@@ -1,6 +1,6 @@
 # Xiaomi Gateway (mihome) listener add-on for Home Assistant
 # Based on node:22-alpine
-FROM node:22-alpine
+FROM node:26-alpine
 
 WORKDIR /app
 
