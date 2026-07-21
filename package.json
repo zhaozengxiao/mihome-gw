@@ -8,6 +8,6 @@
     "start": "node options2config.js && node index.js"
   },
   "dependencies": {
-    "mqtt": "^5.10.1"
+    "mqtt": "^5.15.2"
   }
 }
