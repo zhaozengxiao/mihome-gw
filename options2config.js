@@ -13,11 +13,13 @@ function load() {
 }
 
 const opt = load();
+const doorOpenCooldownMs = Number(opt.doorOpenCooldownMs);
 const config = {
     port: 9898,
     bind: '0.0.0.0',
     debug: !!opt.debug,
     enable_triggers: opt.enable_triggers !== false,
+    doorOpenCooldownMs: Number.isFinite(doorOpenCooldownMs) && doorOpenCooldownMs > 0 ? doorOpenCooldownMs : 3000,
     gateways: [
         { ip: opt.gateway_ip, key: opt.gateway_key, sid: '' }
     ],

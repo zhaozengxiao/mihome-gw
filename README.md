@@ -55,6 +55,7 @@ docker compose up -d
 | `mqtt_password` | MQTT 密码 |
 | `debug` | 是否输出原始报文 (默认 false) |
 | `enable_triggers` | 是否启用内置规则引擎 (默认 true) |
+| `doorOpenCooldownMs` | 门磁从关闭变为打开后，短时间内忽略人体触发，避免灯被重新点亮 (默认 3000) |
 | `rules` | 自定义自动化规则 (可选) |
 
 ## 内置自动化规则
