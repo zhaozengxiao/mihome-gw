@@ -4,9 +4,9 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-# Only install runtime deps
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+# Only install runtime deps (no lock file needed)
+COPY package.json ./
+RUN npm install --omit=dev --no-package-lock && npm cache clean --force
 
 # Application source
 COPY index.js run.sh options2config.js ./
