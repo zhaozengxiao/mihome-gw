@@ -1,0 +1,13 @@
+{
+  "name": "mihome-gw",
+  "version": "1.0.0",
+  "description": "Xiaomi Gateway (mihome) listener proxy for Home Assistant - runs as standalone Docker container",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "node options2config.js && node index.js"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.1"
+  }
+}
